@@ -155,9 +155,31 @@ select{flex:2;}
   <div class="screen" id="loginScreen">
     <div class="panel">
       <h2>Identify Yourself</h2>
+      <div class="row" style="gap:0; border:1px solid var(--panel-border); border-radius:6px; overflow:hidden; padding:0;">
+        <button class="btn small" id="tabLoginBtn" style="flex:1; border-radius:0; margin:0;">Login</button>
+        <button class="btn small" id="tabSignupBtn" style="flex:1; border-radius:0; margin:0; opacity:0.6;">Sign Up</button>
+      </div>
+      <div id="authError" style="color:var(--danger); font-size:12px; min-height:16px; margin-top:8px;"></div>
+
+      <!-- LOGIN VIEW -->
+      <div id="loginView" class="stack">
+        <input type="text" id="loginEmail" placeholder="Email" autocomplete="username">
+        <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password">
+        <button class="btn rust" id="btnEmailLogin">Log In</button>
+        <div style="text-align:right;"><a href="#" id="btnForgotPassword" style="color:var(--steel); font-size:11px;">Forgot password?</a></div>
+      </div>
+
+      <!-- SIGNUP VIEW -->
+      <div id="signupView" class="stack" style="display:none;">
+        <input type="text" id="signupCallsign" placeholder="Callsign (display name)" maxlength="16">
+        <input type="text" id="signupEmail" placeholder="Email" autocomplete="username">
+        <input type="password" id="signupPassword" placeholder="Password (min 6 characters)" autocomplete="new-password">
+        <input type="password" id="signupPassword2" placeholder="Confirm password" autocomplete="new-password">
+        <button class="btn rust" id="btnEmailSignup">Create Account</button>
+      </div>
+
+      <div style="text-align:center; color:var(--steel); font-size:12px; margin:12px 0 6px;">— or —</div>
       <div class="stack">
-        <button class="btn rust" id="btnGoogleLogin">Sign in with Google</button>
-        <div style="text-align:center; color:var(--steel); font-size:12px;">— or —</div>
         <input type="text" id="guestName" placeholder="Enter callsign (guest)" maxlength="16">
         <button class="btn" id="btnGuestLogin">Play as Guest</button>
       </div>
@@ -345,8 +367,9 @@ function ensureProfile(uid, name, isGuest){
       db.ref('leaderboard/'+uid).set({name:name, coins:0, wins:0, kills:0, deaths:0});
       db.ref('settings/'+uid).set({volMaster:70, volSfx:80, sensitivity:8, graphics:'med', language:'en'});
     } else {
-      // touch leaderboard to keep name in sync
+      // touch name in both places to keep in sync (guards against auth-state race on signup)
       db.ref('leaderboard/'+uid+'/name').set(name);
+      profRef.child('name').set(name);
     }
   });
 }
@@ -1589,17 +1612,80 @@ function togglePause(){
 /* =========================================================================
    UI EVENT WIRING
    ========================================================================= */
-document.getElementById('btnGoogleLogin').onclick = ()=>{
-  const provider = new firebase.auth.GoogleAuthProvider();
-  auth.signInWithPopup(provider).catch(e=>alert('Login failed: '+e.message));
+/* ---- Email/Password auth tabs ---- */
+function showAuthTab(tab){
+  const isLogin = tab==='login';
+  document.getElementById('loginView').style.display = isLogin?'flex':'none';
+  document.getElementById('signupView').style.display = isLogin?'none':'flex';
+  document.getElementById('tabLoginBtn').style.opacity = isLogin?'1':'0.6';
+  document.getElementById('tabSignupBtn').style.opacity = isLogin?'0.6':'1';
+  document.getElementById('authError').textContent = '';
+}
+document.getElementById('tabLoginBtn').onclick = ()=>showAuthTab('login');
+document.getElementById('tabSignupBtn').onclick = ()=>showAuthTab('signup');
+
+function friendlyAuthError(e){
+  switch(e.code){
+    case 'auth/email-already-in-use': return 'That email is already registered. Try logging in instead.';
+    case 'auth/invalid-email': return 'That email address doesn\'t look valid.';
+    case 'auth/weak-password': return 'Password must be at least 6 characters.';
+    case 'auth/user-not-found': return 'No account found with that email.';
+    case 'auth/wrong-password': return 'Incorrect password.';
+    case 'auth/invalid-credential': return 'Incorrect email or password.';
+    case 'auth/too-many-requests': return 'Too many attempts. Please wait and try again.';
+    case 'auth/operation-not-allowed': return 'Email/Password sign-in isn\'t enabled for this project yet (enable it in Firebase Console → Authentication → Sign-in method).';
+    case 'auth/network-request-failed': return 'Network error. Check your connection and try again.';
+    default: return e.message || 'Something went wrong. Please try again.';
+  }
+}
+function setAuthError(msg){ document.getElementById('authError').textContent = msg||''; }
+
+document.getElementById('btnEmailSignup').onclick = ()=>{
+  const callsign = document.getElementById('signupCallsign').value.trim();
+  const email = document.getElementById('signupEmail').value.trim();
+  const pass = document.getElementById('signupPassword').value;
+  const pass2 = document.getElementById('signupPassword2').value;
+  setAuthError('');
+  if(!callsign){ setAuthError('Enter a callsign.'); return; }
+  if(!email){ setAuthError('Enter an email address.'); return; }
+  if(pass.length<6){ setAuthError('Password must be at least 6 characters.'); return; }
+  if(pass!==pass2){ setAuthError('Passwords do not match.'); return; }
+  const btn = document.getElementById('btnEmailSignup'); btn.disabled = true; btn.textContent='Creating...';
+  auth.createUserWithEmailAndPassword(email, pass).then(cred=>{
+    return cred.user.updateProfile({displayName:callsign}).then(()=>{
+      ensureProfile(cred.user.uid, callsign, false);
+      watchProfileOnce(cred.user.uid);
+    });
+  }).catch(e=>{ setAuthError(friendlyAuthError(e)); })
+  .finally(()=>{ btn.disabled=false; btn.textContent='Create Account'; });
 };
+
+document.getElementById('btnEmailLogin').onclick = ()=>{
+  const email = document.getElementById('loginEmail').value.trim();
+  const pass = document.getElementById('loginPassword').value;
+  setAuthError('');
+  if(!email || !pass){ setAuthError('Enter your email and password.'); return; }
+  const btn = document.getElementById('btnEmailLogin'); btn.disabled = true; btn.textContent='Logging in...';
+  auth.signInWithEmailAndPassword(email, pass).catch(e=>{ setAuthError(friendlyAuthError(e)); })
+  .finally(()=>{ btn.disabled=false; btn.textContent='Log In'; });
+};
+
+document.getElementById('btnForgotPassword').onclick = (e)=>{
+  e.preventDefault();
+  const email = document.getElementById('loginEmail').value.trim();
+  if(!email){ setAuthError('Enter your email above first, then tap "Forgot password?".'); return; }
+  auth.sendPasswordResetEmail(email).then(()=>{
+    setAuthError('Password reset email sent to '+email+'.');
+  }).catch(e=>setAuthError(friendlyAuthError(e)));
+};
+
 document.getElementById('btnGuestLogin').onclick = ()=>{
   const name = document.getElementById('guestName').value.trim();
-  if(!name){ alert('Enter a callsign'); return; }
+  if(!name){ setAuthError('Enter a callsign to play as guest.'); return; }
   auth.signInAnonymously().then(cred=>{
     ensureProfile(cred.user.uid, name, true);
     watchProfileOnce(cred.user.uid);
-  }).catch(e=>alert('Guest login failed: '+e.message));
+  }).catch(e=>setAuthError(friendlyAuthError(e)));
 };
 function watchProfileOnce(uid){
   db.ref('players/'+uid).once('value').then(snap=>{
